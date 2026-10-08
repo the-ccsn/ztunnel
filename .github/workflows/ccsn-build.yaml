@@ -25,7 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
-      - name: Test and build OCI image
+      - name: Test and build image archive
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -36,9 +36,13 @@ jobs:
             org.opencontainers.image.source=https://github.com/the-ccsn/ztunnel
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=1.31.1-ccsn-chacha20
-          outputs: type=oci,dest=ztunnel-${{ matrix.arch }}.tar
+          outputs: type=docker,dest=ztunnel-${{ matrix.arch }}.tar
           cache-from: type=gha,scope=ztunnel-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=ztunnel-${{ matrix.arch }}
+      - name: Verify runtime binary
+        run: |
+          docker load -i ztunnel-${{ matrix.arch }}.tar
+          docker run ztunnel:1.31.1-ccsn-chacha20-${{ matrix.arch }} version
       - uses: actions/upload-artifact@v4
         with:
           name: ztunnel-1.31.1-ccsn-chacha20-${{ matrix.arch }}

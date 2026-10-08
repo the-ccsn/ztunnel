@@ -60,11 +60,12 @@ upstream runtime image:
 
 ```sh
 podman build -f docker/Dockerfile.ccsn -t ztunnel:1.31.1-ccsn-chacha20 .
-podman run --rm ztunnel:1.31.1-ccsn-chacha20 version
+podman run ztunnel:1.31.1-ccsn-chacha20 version
 ```
 
-The GitHub Actions workflow tests and builds native amd64 and arm64 OCI image
-archives. Download the architecture-specific artifact from the successful
+The GitHub Actions workflow tests and builds native amd64 and arm64 Docker image
+archives, then runs each image's binary to verify runtime compatibility.
+Download the architecture-specific artifact from the successful
 workflow run and load it with `podman load -i ztunnel-amd64.tar` (or arm64).
 Images are build artifacts; the workflow does not publish to a registry.
 Before deploying, publish the selected image to your registry and update
