@@ -1,0 +1,42 @@
+name: CCSN patched ztunnel
+
+on:
+  push:
+    branches: ["ccsn/**"]
+  pull_request:
+    branches: ["ccsn/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Test and build OCI image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.ccsn
+          platforms: linux/${{ matrix.arch }}
+          tags: ztunnel:1.31.1-ccsn-chacha20-${{ matrix.arch }}
+          outputs: type=oci,dest=ztunnel-${{ matrix.arch }}.tar
+          cache-from: type=gha,scope=ztunnel-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=ztunnel-${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ztunnel-1.31.1-ccsn-chacha20-${{ matrix.arch }}
+          path: ztunnel-${{ matrix.arch }}.tar
+          if-no-files-found: error

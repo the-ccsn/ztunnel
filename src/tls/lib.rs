@@ -66,6 +66,46 @@ pub static CRYPTO_PROVIDER: &str = "tls-openssl";
 // One exception is CSR generation which doesn't currently have a plugin mechanism (https://github.com/rustls/rcgen/issues/228);
 // In that case, and any future ones, it is critical to guard the code with appropriate `cfg` guards.
 
+#[cfg(any(feature = "tls-ring", feature = "tls-aws-lc"))]
+fn aes_gcm_accelerated() -> bool {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        std::is_x86_feature_detected!("aes") && std::is_x86_feature_detected!("pclmulqdq")
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        std::arch::is_aarch64_feature_detected!("aes")
+            && std::arch::is_aarch64_feature_detected!("pmull")
+    }
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        false
+    }
+}
+
+#[cfg(any(feature = "tls-ring", feature = "tls-aws-lc"))]
+fn tls13_cipher_suites(
+    aes256: rustls::SupportedCipherSuite,
+    aes128: rustls::SupportedCipherSuite,
+    chacha20: rustls::SupportedCipherSuite,
+    accelerated: bool,
+) -> Vec<rustls::SupportedCipherSuite> {
+    if accelerated {
+        vec![aes256, aes128, chacha20]
+    } else {
+        vec![chacha20, aes256, aes128]
+    }
+}
+
+pub(super) fn prefer_server_cipher_order(provider: &CryptoProvider) -> bool {
+    // Honor a software-only client's preference on accelerated servers. A software-only
+    // server must enforce its own preference even when the client prefers AES.
+    provider
+        .cipher_suites
+        .first()
+        .is_some_and(|suite| suite.suite() == rustls::CipherSuite::TLS13_CHACHA20_POLY1305_SHA256)
+}
+
 #[cfg(feature = "tls-boring")]
 pub(super) fn provider() -> Arc<CryptoProvider> {
     // Due to 'fips-only' feature on the boring provider, this will use only AES_256_GCM_SHA384
@@ -75,10 +115,17 @@ pub(super) fn provider() -> Arc<CryptoProvider> {
 
 #[cfg(feature = "tls-ring")]
 pub(super) fn provider() -> Arc<CryptoProvider> {
-    let mut cipher_suites = vec![
+    provider_with_aes_acceleration(aes_gcm_accelerated())
+}
+
+#[cfg(feature = "tls-ring")]
+pub(super) fn provider_with_aes_acceleration(accelerated: bool) -> Arc<CryptoProvider> {
+    let mut cipher_suites = tls13_cipher_suites(
         rustls::crypto::ring::cipher_suite::TLS13_AES_256_GCM_SHA384,
         rustls::crypto::ring::cipher_suite::TLS13_AES_128_GCM_SHA256,
-    ];
+        rustls::crypto::ring::cipher_suite::TLS13_CHACHA20_POLY1305_SHA256,
+        accelerated,
+    );
     if *TLS12_ENABLED {
         // Add TLS 1.2 FIPS-compatible cipher suites
         cipher_suites.extend([
@@ -96,10 +143,17 @@ pub(super) fn provider() -> Arc<CryptoProvider> {
 
 #[cfg(feature = "tls-aws-lc")]
 pub(super) fn provider() -> Arc<CryptoProvider> {
-    let mut cipher_suites = vec![
+    provider_with_aes_acceleration(aes_gcm_accelerated())
+}
+
+#[cfg(feature = "tls-aws-lc")]
+pub(super) fn provider_with_aes_acceleration(accelerated: bool) -> Arc<CryptoProvider> {
+    let mut cipher_suites = tls13_cipher_suites(
         rustls::crypto::aws_lc_rs::cipher_suite::TLS13_AES_256_GCM_SHA384,
         rustls::crypto::aws_lc_rs::cipher_suite::TLS13_AES_128_GCM_SHA256,
-    ];
+        rustls::crypto::aws_lc_rs::cipher_suite::TLS13_CHACHA20_POLY1305_SHA256,
+        accelerated,
+    );
     if *TLS12_ENABLED {
         // Add TLS 1.2 FIPS-compatible cipher suites
         cipher_suites.extend([

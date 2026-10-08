@@ -41,7 +41,14 @@ Rustls has support for plugging in various crypto providers to meet various need
 | [boring](https://github.com/cloudflare/boring)     | `--features tls-boring --no-default-features`  |
 | [openssl](https://github.com/tofay/rustls-openssl) | `--features tls-openssl --no-default-features` |
 
-In all options, only TLS 1.3 with cipher suites `TLS13_AES_256_GCM_SHA384` and `TLS13_AES_128_GCM_SHA256` is used.
+This CCSN fork is based on Istio **1.31.1** and adds adaptive TLS 1.3 cipher selection
+for the default AWS-LC provider and the ring provider. See [CCSN build instructions](docs/ccsn-chacha20.md).
+
+AWS-LC and ring support `TLS13_CHACHA20_POLY1305_SHA256` in addition to
+`TLS13_AES_256_GCM_SHA384` and `TLS13_AES_128_GCM_SHA256`. ChaCha20 is preferred when
+AES-GCM hardware acceleration is unavailable. BoringSSL FIPS and OpenSSL retain
+their upstream AES-only configuration. TLS 1.2, when explicitly enabled, retains
+the upstream AES-only cipher suites.
 
 #### `boring` FIPS
 

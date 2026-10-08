@@ -317,15 +317,21 @@ impl WorkloadCertificate {
         &self,
         crl_manager: Option<Arc<crate::tls::crl::CrlManager>>,
     ) -> Result<ServerConfig, Error> {
+        self.server_config_with_provider(crl_manager, crate::tls::lib::provider())
+    }
+
+    fn server_config_with_provider(
+        &self,
+        crl_manager: Option<Arc<crate::tls::crl::CrlManager>>,
+        provider: Arc<rustls::crypto::CryptoProvider>,
+    ) -> Result<ServerConfig, Error> {
         let td = self.cert.identity().map(|i| match i {
             Identity::Spiffe { trust_domain, .. } => trust_domain,
         });
 
         // build the base client cert verifier with optional CRL support
-        let mut builder = WebPkiClientVerifier::builder_with_provider(
-            self.root_store.clone(),
-            crate::tls::lib::provider(),
-        );
+        let mut builder =
+            WebPkiClientVerifier::builder_with_provider(self.root_store.clone(), provider.clone());
 
         // add CRLs if available
         if let Some(ref mgr) = crl_manager {
@@ -342,7 +348,8 @@ impl WorkloadCertificate {
 
         let client_cert_verifier =
             crate::tls::workload::TrustDomainVerifier::new(raw_client_cert_verifier, td);
-        let mut sc = ServerConfig::builder_with_provider(crate::tls::lib::provider())
+        let ignore_client_order = crate::tls::lib::prefer_server_cipher_order(&provider);
+        let mut sc = ServerConfig::builder_with_provider(provider)
             .with_protocol_versions(tls::tls_versions())
             .expect("server config must be valid")
             .with_client_cert_verifier(client_cert_verifier)
@@ -351,6 +358,7 @@ impl WorkloadCertificate {
                 self.private_key.clone_key(),
             )?;
         sc.alpn_protocols = vec![b"h2".into()];
+        sc.ignore_client_order = ignore_client_order;
         Ok(sc)
     }
 
@@ -359,13 +367,22 @@ impl WorkloadCertificate {
         identity: Vec<Identity>,
         crl_manager: Option<Arc<crate::tls::crl::CrlManager>>,
     ) -> Result<ClientConfig, rustls::Error> {
+        self.client_config_with_provider(identity, crl_manager, crate::tls::lib::provider())
+    }
+
+    fn client_config_with_provider(
+        &self,
+        identity: Vec<Identity>,
+        crl_manager: Option<Arc<crate::tls::crl::CrlManager>>,
+        provider: Arc<rustls::crypto::CryptoProvider>,
+    ) -> Result<ClientConfig, rustls::Error> {
         let roots = self.root_store.clone();
         let verifier = IdentityVerifier {
             roots,
             identity,
             crl_manager,
         };
-        let mut cc = ClientConfig::builder_with_provider(crate::tls::lib::provider())
+        let mut cc = ClientConfig::builder_with_provider(provider)
             .with_protocol_versions(tls::tls_versions())
             .expect("client config must be valid")
             .dangerous() // Customer verifier is requires "dangerous" opt-in
@@ -465,6 +482,89 @@ mod test {
     use tokio::net::TcpListener;
     use tokio::net::TcpStream;
     use tokio_rustls::TlsAcceptor;
+
+    #[tokio::test]
+    #[cfg(any(feature = "tls-ring", feature = "tls-aws-lc"))]
+    async fn adaptive_cipher_negotiation() {
+        use crate::tls::lib::provider_with_aes_acceleration;
+        use rustls::CipherSuite::{TLS13_AES_256_GCM_SHA384, TLS13_CHACHA20_POLY1305_SHA256};
+
+        let id = Identity::default();
+        let cert = crate::tls::mock::generate_test_certs(
+            &TestIdentity::Identity(id.clone()),
+            Duration::ZERO,
+            Duration::from_secs(60),
+        );
+        // Exercise both connection directions, including AES-only upstream peers.
+        // None models upstream's provider with ChaCha20 removed.
+        for client_accelerated in [Some(true), Some(false), None] {
+            for server_accelerated in [Some(true), Some(false), None] {
+                let make_provider = |accelerated: Option<bool>| {
+                    let mut p =
+                        (*provider_with_aes_acceleration(accelerated.unwrap_or(true))).clone();
+                    if accelerated.is_none() {
+                        p.cipher_suites
+                            .retain(|suite| suite.suite() != TLS13_CHACHA20_POLY1305_SHA256);
+                    }
+                    Arc::new(p)
+                };
+                let client = cert
+                    .client_config_with_provider(
+                        vec![id.clone()],
+                        None,
+                        make_provider(client_accelerated),
+                    )
+                    .unwrap();
+                let server = cert
+                    .server_config_with_provider(None, make_provider(server_accelerated))
+                    .unwrap();
+                let connector = tokio_rustls::TlsConnector::from(Arc::new(client));
+                let acceptor = TlsAcceptor::from(Arc::new(server));
+                let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+                let (client, server) = tokio::time::timeout(Duration::from_secs(5), async {
+                    tokio::join!(
+                        connector.connect("localhost".try_into().unwrap(), client_io),
+                        acceptor.accept(server_io),
+                    )
+                })
+                .await
+                .unwrap();
+                let mut client = client.unwrap();
+                let mut server = server.unwrap();
+                let expected = if client_accelerated.is_some()
+                    && server_accelerated.is_some()
+                    && (client_accelerated == Some(false) || server_accelerated == Some(false))
+                {
+                    TLS13_CHACHA20_POLY1305_SHA256
+                } else {
+                    TLS13_AES_256_GCM_SHA384
+                };
+                for connection in [
+                    client.get_ref().1 as &rustls::CommonState,
+                    server.get_ref().1,
+                ] {
+                    assert_eq!(
+                        connection.negotiated_cipher_suite().unwrap().suite(),
+                        expected,
+                        "client={client_accelerated:?}, server={server_accelerated:?}"
+                    );
+                    assert_eq!(
+                        connection.protocol_version(),
+                        Some(rustls::ProtocolVersion::TLSv1_3)
+                    );
+                    assert_eq!(connection.alpn_protocol(), Some(b"h2".as_slice()));
+                    assert!(!connection.peer_certificates().unwrap().is_empty());
+                }
+                client.write_all(b"hello").await.unwrap();
+                let mut data = [0; 5];
+                server.read_exact(&mut data).await.unwrap();
+                assert_eq!(&data, b"hello");
+                server.write_all(b"world").await.unwrap();
+                client.read_exact(&mut data).await.unwrap();
+                assert_eq!(&data, b"world");
+            }
+        }
+    }
 
     #[tokio::test]
     async fn multi_root() {
