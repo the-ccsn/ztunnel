@@ -1,6 +1,7 @@
 # Use the same pinned build environment as upstream release-1.31.
 FROM registry.istio.io/testing/build-tools:release-1.31-b191766806f5d2982fab99ee081c7e519d436019 AS source
 WORKDIR /work
+ENV CARGO_BUILD_JOBS=2
 COPY . .
 
 FROM source AS verify
@@ -12,7 +13,7 @@ ARG VERSION=1.31.1-ccsn-chacha20
 RUN VERSION=${VERSION} cargo build --locked --release --bin ztunnel
 
 # Preserve upstream's runtime filesystem and required networking utilities.
-FROM registry.istio.io/release/ztunnel:1.31.1 AS runtime
+FROM docker.io/istio/ztunnel:1.31.1 AS runtime
 COPY --from=build /work/out/rust/release/ztunnel /usr/local/bin/ztunnel
 ENV ISTIO_META_ISTIO_VERSION=1.31.1
 ENTRYPOINT ["/usr/local/bin/ztunnel"]

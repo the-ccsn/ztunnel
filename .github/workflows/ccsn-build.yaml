@@ -32,6 +32,10 @@ jobs:
           file: docker/Dockerfile.ccsn
           platforms: linux/${{ matrix.arch }}
           tags: ztunnel:1.31.1-ccsn-chacha20-${{ matrix.arch }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/the-ccsn/ztunnel
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=1.31.1-ccsn-chacha20
           outputs: type=oci,dest=ztunnel-${{ matrix.arch }}.tar
           cache-from: type=gha,scope=ztunnel-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=ztunnel-${{ matrix.arch }}
